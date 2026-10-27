@@ -1,0 +1,22 @@
+node_modules/
+lib/
+coverage/
+.npm-cache/
+
+# Native helper build output (compiled on macOS, never committed).
+native/macos/build/
+
+# Local configuration and environment.
+.env
+.env.*
+*.local
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Screenshots produced by manual runs must never be committed.
+screenshots/
+*.png.tmp
