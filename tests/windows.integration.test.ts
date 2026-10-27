@@ -424,6 +424,17 @@ describe.skipIf(process.platform !== 'win32')('Windows capture fidelity', () => 
     children.delete(child)
   }
 
+  async function waitForWindow(title: string, timeoutMs = 40_000): Promise<WindowSummary> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const targets = await service.listWindows({ filter: title }).catch(() => undefined)
+      const match = targets?.windows.find((window) => window.title === title)
+      if (match) return match
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new Error(`fixture window ${title} never appeared`)
+  }
+
   beforeAll(async () => {
     temp = await makeTempDirectory('dsh-shot-fidelity-')
     const config = resolveConfig({ outputDir: temp.path, timeoutMs: 60_000 }, {})
@@ -459,19 +470,8 @@ describe.skipIf(process.platform !== 'win32')('Windows capture fidelity', () => 
     child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[pattern] ${chunk.toString()}`))
     children.add(child)
 
-    const deadline = Date.now() + 40_000
-    while (Date.now() < deadline) {
-      const targets = await service.listWindows({ filter: patternTitle }).catch(() => undefined)
-      const match = targets?.windows.find((window) => window.title === patternTitle)
-      if (match) {
-        patternWindow = match
-        break
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-    if (!patternWindow) throw new Error(`pattern fixture window ${patternTitle} never appeared`)
+    patternWindow = await waitForWindow(patternTitle)
   })
-
   afterAll(async () => {
     for (const child of [...children]) await stop(child)
     await temp?.cleanup()
@@ -570,5 +570,85 @@ describe.skipIf(process.platform !== 'win32')('Windows capture fidelity', () => 
 
     expect(comparison.samples).toEqual([])
     expect(comparison.differing).toBe(0)
+  })
+
+  it('crops a bordered window to its visible frame instead of shifting it', async () => {
+    // A bordered window's rectangle is larger than its visible (DWM) frame by
+    // the invisible resize border, and GDI renders from the rectangle's origin.
+    // Capturing at visible-frame size from that origin shifted the image by the
+    // border width and showed a strip of the border on the left and bottom.
+    const title = `DSH Bordered ${process.pid}-${Date.now().toString(36)}`
+    const borderedExpected = path.join(temp.path, 'bordered-expected.png')
+    const geometryPath = path.join(temp.path, 'bordered-geometry.json')
+
+    const child = spawn(
+      POWERSHELL,
+      [
+        '-NoProfile',
+        '-STA',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        PATTERN_FIXTURE,
+        '-Title',
+        title,
+        '-ExpectedPath',
+        borderedExpected,
+        '-GeometryPath',
+        geometryPath,
+        '-Width',
+        String(PATTERN_WIDTH),
+        '-Height',
+        String(PATTERN_HEIGHT),
+        '-Bordered',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false },
+    )
+    child.stdout?.on('data', () => {})
+    child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[bordered] ${chunk.toString()}`))
+    children.add(child)
+
+    try {
+      const window = await waitForWindow(title)
+      const rawGeometry = await fs.readFile(geometryPath, 'utf8')
+      const geometry = JSON.parse(rawGeometry.replace(/^\uFEFF/, '')) as {
+        clientX: number
+        clientY: number
+        clientWidth: number
+        clientHeight: number
+        windowWidth: number
+        windowHeight: number
+      }
+
+      // The fixture must really have a resize border for this test to mean anything.
+      expect(geometry.windowWidth).toBeGreaterThan(geometry.clientWidth)
+      expect(window.bounds.width).toBeLessThan(geometry.windowWidth)
+
+      const result = await service.captureWindow({ windowId: window.id })
+
+      // The saved image is the visible frame, not the larger window rectangle.
+      expect(result.width).toBe(window.bounds.width)
+      expect(result.height).toBe(window.bounds.height)
+
+      const captured = decodePng(await fs.readFile(result.path))
+      expect(captured.width).toBe(window.bounds.width)
+      expect(captured.height).toBe(window.bounds.height)
+
+      // The client area carries the known pattern; it must appear at exactly the
+      // geometric position implied by the window and client rectangles.
+      const offsetX = geometry.clientX - window.bounds.x
+      const offsetY = geometry.clientY - window.bounds.y
+      expect(offsetX).toBeGreaterThan(0)
+
+      const comparison = compareImages(captured, decodePng(await fs.readFile(borderedExpected)), {
+        x: offsetX,
+        y: offsetY,
+      })
+
+      expect(comparison.samples).toEqual([])
+      expect(comparison.differing).toBe(0)
+    } finally {
+      await stop(child)
+    }
   })
 })

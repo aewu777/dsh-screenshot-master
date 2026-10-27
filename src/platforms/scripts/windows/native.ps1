@@ -200,6 +200,32 @@ function Get-DshShotWindowBounds {
     }
 }
 
+function Get-DshShotWindowRect {
+    <#
+      .SYNOPSIS
+        The real window rectangle, including the invisible resize border.
+      .DESCRIPTION
+        GDI renders into, and reads from, a window DC whose origin is this
+        rectangle. `Get-DshShotWindowBounds` returns the smaller *visible* frame,
+        so the two differ by the invisible resize border (typically 7-8px on the
+        left, right and bottom of a DWM window). A capture has to start at this
+        rectangle and then be cropped to the visible one.
+    #>
+    param([IntPtr]$Handle)
+
+    $rect = New-Object DshShotNative+RECT
+    if (-not [DshShotNative]::GetWindowRect($Handle, [ref]$rect)) {
+        return $null
+    }
+
+    return [pscustomobject][ordered]@{
+        x      = [int]$rect.Left
+        y      = [int]$rect.Top
+        width  = [int]($rect.Right - $rect.Left)
+        height = [int]($rect.Bottom - $rect.Top)
+    }
+}
+
 function Get-DshShotWindowExStyle {
     param([IntPtr]$Handle)
     return [DshShotNative]::GetWindowLong($Handle, $script:DshShotGwlExStyle)
@@ -339,44 +365,61 @@ function Get-DshShotWindows {
 function Save-DshShotBitmap {
     <#
       .SYNOPSIS
-        Write a captured bitmap to PNG as opaque 24-bit RGB.
+        Crop a captured bitmap to its visible frame and write it as an opaque
+        24-bit PNG.
       .DESCRIPTION
-        The conversion copies pixels and ignores the source alpha channel.
+        Two things happen here, both essential.
 
-        Every GDI capture API used here (CopyFromScreen, PrintWindow, BitBlt)
-        leaves the alpha byte of a 32bpp destination undefined: a freshly created
-        Format32bppArgb bitmap starts at ARGB(0,0,0,0), GDI writes only the colour
-        bytes, and any region that was never painted keeps alpha 0 with black RGB.
-        Blending such a pixel over a background therefore invents colour that was
-        never rendered - a dark pixel with alpha 0 turns into pure white. That is
-        a capture artifact, not image content.
+        1. Crop. GDI renders and reads a window DC from the *window rectangle*,
+           which includes the invisible resize border; the visible frame is the
+           smaller DWM rectangle. A bitmap sized to the visible frame but filled
+           from the window origin is therefore shifted by that border and shows a
+           strip of the border instead of the window's own edge. The caller passes
+           the visible frame as -Crop and the image is taken from there.
 
-        `Bitmap.Clone` performs a format conversion only; it does not composite,
-        so the colour values that GDI actually produced are preserved and the
-        meaningless alpha byte is dropped.
+        2. Drop alpha. Every GDI capture API used here leaves the alpha byte of a
+           32bpp destination undefined: a freshly created Format32bppArgb bitmap
+           starts at ARGB(0,0,0,0), GDI writes only the colour bytes, and any
+           region that was never painted keeps alpha 0 with black RGB. Blending
+           such a pixel over a background invents colour that was never rendered -
+           a dark pixel with alpha 0 turns into pure white.
+
+        `Bitmap.Clone` performs a crop and a format conversion in one native step
+        and does not composite, so the colour values GDI produced are preserved.
     #>
     param(
         [System.Drawing.Bitmap]$Bitmap,
-        [string]$Path
+        [string]$Path,
+        # Declared as [object] so that "no crop" can be expressed as $null; a
+        # value-type parameter cannot be bound to $null.
+        [object]$Crop
     )
 
-    $width = $Bitmap.Width
-    $height = $Bitmap.Height
     $targetFormat = [System.Drawing.Imaging.PixelFormat]::Format24bppRgb
 
-    if ($Bitmap.PixelFormat -eq $targetFormat) {
-        $owned = $false
-        $output = $Bitmap
+    if ($null -eq $Crop) {
+        $left = 0
+        $top = 0
+        $width = $Bitmap.Width
+        $height = $Bitmap.Height
     } else {
-        $rect = New-Object System.Drawing.Rectangle(0, 0, $width, $height)
-        $output = $Bitmap.Clone($rect, $targetFormat)
-        $owned = $true
+        $cropRect = [System.Drawing.Rectangle]$Crop
+        $left = [Math]::Max(0, [Math]::Min($cropRect.X, $Bitmap.Width - 1))
+        $top = [Math]::Max(0, [Math]::Min($cropRect.Y, $Bitmap.Height - 1))
+        $width = [Math]::Min($cropRect.Width, $Bitmap.Width - $left)
+        $height = [Math]::Min($cropRect.Height, $Bitmap.Height - $top)
     }
 
+    if ($width -le 0 -or $height -le 0) {
+        throw "The crop rectangle (${width}x${height}) does not intersect the captured bitmap."
+    }
+
+    $rect = New-Object System.Drawing.Rectangle($left, $top, $width, $height)
+    $output = $Bitmap.Clone($rect, $targetFormat)
     try {
         $output.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     } finally {
-        if ($owned) { $output.Dispose() }
+        $output.Dispose()
     }
 
     return [pscustomobject][ordered]@{ width = $width; height = $height }

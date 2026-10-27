@@ -297,6 +297,19 @@ Window capture walks a documented chain and reports which step produced the imag
    rectangle is copied off the desktop. Reported with `fallback: true` and a note that overlapping windows are
    included.
 
+### Why the image is not offset by the window border
+
+A Windows window has two rectangles: the *window rectangle* (`GetWindowRect`) and the smaller *visible frame*
+(`DWMWA_EXTENDED_FRAME_BOUNDS`). They differ by the invisible resize border — typically 7 px on the left, right and
+bottom of a DWM window. GDI renders `PrintWindow` and reads `BitBlt` from the window rectangle's origin, so a bitmap
+sized to the visible frame but filled from that origin is shifted: it shows a strip of the invisible border instead of
+the window's own left edge, and loses the same number of pixels on the right.
+
+The backend therefore captures the whole window rectangle and crops to the visible frame (`Bitmap.Clone` with the
+crop rectangle) before saving. Borderless windows, where both rectangles coincide, are unaffected. The outermost
+one-pixel border that DWM itself paints cannot be produced by `PrintWindow`; that ring is written as the buffer
+actually contains instead of duplicating a neighbouring pixel.
+
 ### Why the PNG conversion never composites
 
 Every capture buffer is written to PNG as opaque 24-bit RGB by **copying pixels, never by compositing them over a
@@ -427,7 +440,10 @@ capture against both that bitmap and an independently computed prediction of the
 - colours are exact and not channel-swapped (pure red/green/blue/magenta/cyan/yellow swatches, gradient endpoints),
 - a full-screen capture matches the same window region pixel for pixel,
 - no isolated bright pixels are introduced anywhere,
-- the PNG conversion ignores the capture buffer's undefined alpha channel.
+- the PNG conversion ignores the capture buffer's undefined alpha channel,
+- a **bordered** window, whose window rectangle is larger than its visible frame, is cropped correctly: the client
+  area appears at exactly the offset implied by the window and client rectangles, so the image is not shifted by the
+  invisible border.
 
 `tests/fixtures/conversion-check.ps1` feeds the production conversion a bitmap whose alpha bytes are 0, 128 and
 nonsense, and asserts the colours survive untouched.
@@ -462,7 +478,7 @@ Notes:
 
 ## Verification status
 
-Last updated after the capture-fidelity investigation (2026-10-27, Windows 11 development machine).
+Last updated after the window-frame alignment fix (2026-10-27, Windows 11 development machine).
 
 | Claim | Evidence |
 | --- | --- |
@@ -471,6 +487,7 @@ Last updated after the capture-fidelity investigation (2026-10-27, Windows 11 de
 | Windows window enumeration works | Same suite — real windows and displays enumerated with unique identifiers. **Passed locally.** |
 | Capture pipeline is pixel-exact | `Windows capture fidelity` tests — 0 of 76 800 pixels differ from the fixture's own rendering, and 0 differ for the same window region inside a full-screen capture. **Passed locally.** |
 | The PNG conversion does not fabricate white pixels | `converts a capture buffer without compositing it over a background` — verified to fail against the pre-fix implementation and pass after the fix. **Passed locally.** |
+| A window image is aligned to the visible frame, not shifted by the invisible border | `crops a bordered window to its visible frame instead of shifting it` — verified to fail against the pre-fix implementation and pass after. On a real 1004×672 window the stray left strip went from 8 black columns to 1, and the 7 px previously missing on the right are now included. **Passed locally.** |
 | PNG validation, naming, uniqueness, fallback and error mapping | 174 unit tests, all passing locally. |
 | macOS TypeScript orchestration | 26 unit tests with an injected runner, passing locally on Windows. |
 | **macOS real screen and window capture** | **Not verified on a macOS machine during development.** The suite is written and the helper is implemented, but no macOS hardware was available here. Verification depends on the `macos-real-capture` GitHub Actions job actually passing. Until that job has produced a green run, treat macOS support as **UNVERIFIED**. |

@@ -22,7 +22,13 @@ param(
     [int]$Width = 320,
     [int]$Height = 240,
     [int]$X = 200,
-    [int]$Y = 150
+    [int]$Y = 150,
+    # Give the window a normal title bar and resize border. The window rectangle
+    # then differs from the visible DWM frame by the invisible resize border,
+    # which is exactly the situation the crop in capture.ps1 has to handle.
+    [switch]$Bordered,
+    # Optional path for a JSON description of the window and client geometry.
+    [string]$GeometryPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,7 +119,6 @@ $bitmap.Save($ExpectedPath, [System.Drawing.Imaging.ImageFormat]::Png)
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $Title
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $form.StartPosition = 'Manual'
 $form.Location = New-Object System.Drawing.Point($X, $Y)
 $form.ClientSize = New-Object System.Drawing.Size($Width, $Height)
@@ -121,16 +126,39 @@ $form.BackColor = [System.Drawing.Color]::Black
 $form.BackgroundImage = $bitmap
 $form.BackgroundImageLayout = [System.Windows.Forms.ImageLayout]::None
 $form.TopMost = $true
+if ($Bordered) {
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+} else {
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+}
 
 $form.add_Shown({
+    $origin = $form.PointToScreen([System.Drawing.Point]::Empty)
     $info = [ordered]@{
-        ready  = $true
-        hwnd   = $form.Handle.ToInt64()
-        title  = $form.Text
-        width  = $Width
-        height = $Height
-        x      = $X
-        y      = $Y
+        ready       = $true
+        hwnd        = $form.Handle.ToInt64()
+        title       = $form.Text
+        width       = $Width
+        height      = $Height
+        x           = $X
+        y           = $Y
+        bordered    = [bool]$Bordered
+        clientX     = $origin.X
+        clientY     = $origin.Y
+        clientWidth = $form.ClientSize.Width
+        clientHeight = $form.ClientSize.Height
+        windowX     = $form.Left
+        windowY     = $form.Top
+        windowWidth = $form.Width
+        windowHeight = $form.Height
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GeometryPath)) {
+        $json = $info | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText(
+            $GeometryPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
     }
     [Console]::Out.WriteLine(($info | ConvertTo-Json -Compress))
     [Console]::Out.Flush()

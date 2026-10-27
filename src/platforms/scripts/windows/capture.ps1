@@ -105,6 +105,7 @@ try {
     $notes = New-Object System.Collections.ArrayList
     $method = ''
     $captured = $null
+    $crop = $null
     $displayInfo = $null
     $windowInfo = $null
 
@@ -198,14 +199,32 @@ try {
                 [void]$notes.Add('This window has no redirection surface (WS_EX_NOREDIRECTIONBITMAP); native capture usually returns nothing.')
             }
 
-            $attempt = Invoke-DshShotPrintWindow -Handle $handle -Width $bounds.width -Height $bounds.height -Flags $PW_RENDERFULLCONTENT
+            # GDI renders into, and reads from, a DC whose origin is the *window
+            # rectangle*, which includes the invisible resize border. The visible
+            # frame is the smaller DWM rectangle, so capture the whole window
+            # rectangle here and crop to the visible frame before saving.
+            # Without this the image is shifted by the border and shows a strip of
+            # it instead of the window's own left and bottom edge.
+            $windowRect = Get-DshShotWindowRect -Handle $handle
+            if ($null -eq $windowRect -or $windowRect.width -le 0 -or $windowRect.height -le 0) {
+                $windowRect = $bounds
+            }
+            $captureWidth = [int]$windowRect.width
+            $captureHeight = [int]$windowRect.height
+            $crop = New-Object System.Drawing.Rectangle(
+                ([int]($bounds.x - $windowRect.x)),
+                ([int]($bounds.y - $windowRect.y)),
+                ([int]$bounds.width),
+                ([int]$bounds.height))
+
+            $attempt = Invoke-DshShotPrintWindow -Handle $handle -Width $captureWidth -Height $captureHeight -Flags $PW_RENDERFULLCONTENT
             if ($attempt.ok) {
                 $captured = $attempt.bitmap
                 $method = 'printwindow'
             } else {
                 $attempt.bitmap.Dispose()
 
-                $attempt = Invoke-DshShotPrintWindow -Handle $handle -Width $bounds.width -Height $bounds.height -Flags 0
+                $attempt = Invoke-DshShotPrintWindow -Handle $handle -Width $captureWidth -Height $captureHeight -Flags 0
                 if ($attempt.ok) {
                     $captured = $attempt.bitmap
                     $method = 'printwindow'
@@ -213,7 +232,7 @@ try {
                 } else {
                     $attempt.bitmap.Dispose()
 
-                    $attempt = Invoke-DshShotBitBlt -Handle $handle -Width $bounds.width -Height $bounds.height
+                    $attempt = Invoke-DshShotBitBlt -Handle $handle -Width $captureWidth -Height $captureHeight
                     if ($attempt.ok) {
                         $captured = $attempt.bitmap
                         $method = 'bitblt'
@@ -232,7 +251,7 @@ try {
     }
 
     try {
-        $saved = Save-DshShotBitmap -Bitmap $captured -Path $Out
+        $saved = Save-DshShotBitmap -Bitmap $captured -Path $Out -Crop $crop
     } finally {
         $captured.Dispose()
     }
