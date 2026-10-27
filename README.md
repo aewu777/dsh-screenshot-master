@@ -420,8 +420,14 @@ npm run test:unit          # unit project
 npm run test:integration   # integration project (real captures)
 npm run typecheck          # tsc over src/ and tests/
 npm run lint               # eslint
-npm run check              # typecheck + lint + build + unit tests
+npm run check:workflow     # parse .github/workflows/tests.yml and check its structure
+npm run check              # workflow check + typecheck + lint + build + unit tests
 ```
+
+`check:workflow` exists because GitHub rejects the entire workflow file on a YAML
+syntax error and reports the run as a failure with no jobs at all — which looks
+exactly like failing tests. A `name:` value containing `": "` is enough to trigger
+it, so the file is parsed and structurally checked locally before it is pushed.
 
 What needs a real display or interactive session:
 

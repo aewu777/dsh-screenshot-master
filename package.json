@@ -52,12 +52,14 @@
     "test:integration": "vitest run --project integration",
     "test:watch": "vitest --project unit",
     "build:native:macos": "sh scripts/build-macos-helper.sh",
-    "check": "npm run typecheck && npm run lint && npm run build && npm run test"
+    "check:workflow": "node scripts/check-workflow.mjs",
+    "check": "npm run check:workflow && npm run typecheck && npm run lint && npm run build && npm run test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.5",
     "eslint": "^9.39.5",
+    "js-yaml": "^4.3.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.1",
     "vitest": "^3.2.4"

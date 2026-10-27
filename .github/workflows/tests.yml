@@ -154,7 +154,7 @@ jobs:
           echo "--- shareable content ---"
           ./native/macos/build/dsh-screenshot-helper list | head -c 4000 || true
 
-      - name: macOS real-capture integration tests (Test A: screen, Test B: window)
+      - name: 'macOS real-capture integration tests (Test A: screen, Test B: window)'
         shell: bash
         run: npm run test:integration 2>&1 | tee macos-integration.log
 
