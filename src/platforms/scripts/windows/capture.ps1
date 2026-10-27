@@ -211,11 +211,32 @@ try {
             }
             $captureWidth = [int]$windowRect.width
             $captureHeight = [int]$windowRect.height
-            $crop = New-Object System.Drawing.Rectangle(
-                ([int]($bounds.x - $windowRect.x)),
-                ([int]($bounds.y - $windowRect.y)),
-                ([int]$bounds.width),
-                ([int]$bounds.height))
+            $cropX = [int]($bounds.x - $windowRect.x)
+            $cropY = [int]($bounds.y - $windowRect.y)
+            $cropWidth = [int]$bounds.width
+            $cropHeight = [int]$bounds.height
+
+            # The desktop window manager composites a 1px frame between the
+            # visible frame and the client area. PrintWindow does not draw it and
+            # paints that ring black, which showed up as a black border on every
+            # bordered window capture. The ring width is the gap between the
+            # client rectangle and the visible frame on each side (the gap at the
+            # top is the title bar, which the window paints itself and must stay).
+            $clientRect = Get-DshShotClientRect -Handle $handle
+            if ($null -ne $clientRect -and $clientRect.width -gt 0 -and $clientRect.height -gt 0) {
+                $borderLeft = [Math]::Max(0, $clientRect.x - $bounds.x)
+                $borderRight = [Math]::Max(0, ($bounds.x + $bounds.width) - ($clientRect.x + $clientRect.width))
+                $borderBottom = [Math]::Max(0, ($bounds.y + $bounds.height) - ($clientRect.y + $clientRect.height))
+                if (($borderLeft + $borderRight) -lt $cropWidth) {
+                    $cropX += $borderLeft
+                    $cropWidth -= ($borderLeft + $borderRight)
+                }
+                if ($borderBottom -lt $cropHeight) {
+                    $cropHeight -= $borderBottom
+                }
+            }
+
+            $crop = New-Object System.Drawing.Rectangle($cropX, $cropY, $cropWidth, $cropHeight)
 
             $attempt = Invoke-DshShotPrintWindow -Handle $handle -Width $captureWidth -Height $captureHeight -Flags $PW_RENDERFULLCONTENT
             if ($attempt.ok) {

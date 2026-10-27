@@ -306,9 +306,19 @@ sized to the visible frame but filled from that origin is shifted: it shows a st
 the window's own left edge, and loses the same number of pixels on the right.
 
 The backend therefore captures the whole window rectangle and crops to the visible frame (`Bitmap.Clone` with the
-crop rectangle) before saving. Borderless windows, where both rectangles coincide, are unaffected. The outermost
-one-pixel border that DWM itself paints cannot be produced by `PrintWindow`; that ring is written as the buffer
-actually contains instead of duplicating a neighbouring pixel.
+crop rectangle) before saving. Borderless windows, where both rectangles coincide, are unaffected.
+
+### Why the image has no black frame
+
+`PrintWindow` does not paint the one-pixel frame that the desktop window manager composites between the visible
+frame and the client area; it leaves that ring black. The ring width is measurable: it is the gap between the client
+rectangle and the visible frame on the left, the right and the bottom (the gap at the top is the title bar, which the
+window paints itself and which is kept).
+
+That ring is excluded from the saved image. A window capture is therefore exactly the area the window paints — its
+title bar and client area — and can be one pixel smaller on each bordered side than the visible frame reported by
+`list_windows` (for example a 1004×672 visible frame yields a 1002×671 image). Borderless windows are exactly the
+size of their frame because they have no such ring.
 
 ### Why the PNG conversion never composites
 
@@ -443,7 +453,7 @@ capture against both that bitmap and an independently computed prediction of the
 - the PNG conversion ignores the capture buffer's undefined alpha channel,
 - a **bordered** window, whose window rectangle is larger than its visible frame, is cropped correctly: the client
   area appears at exactly the offset implied by the window and client rectangles, so the image is not shifted by the
-  invisible border.
+  invisible border, and the black 1px frame the window manager draws is not present.
 
 `tests/fixtures/conversion-check.ps1` feeds the production conversion a bitmap whose alpha bytes are 0, 128 and
 nonsense, and asserts the colours survive untouched.
@@ -488,6 +498,7 @@ Last updated after the window-frame alignment fix (2026-10-27, Windows 11 develo
 | Capture pipeline is pixel-exact | `Windows capture fidelity` tests — 0 of 76 800 pixels differ from the fixture's own rendering, and 0 differ for the same window region inside a full-screen capture. **Passed locally.** |
 | The PNG conversion does not fabricate white pixels | `converts a capture buffer without compositing it over a background` — verified to fail against the pre-fix implementation and pass after the fix. **Passed locally.** |
 | A window image is aligned to the visible frame, not shifted by the invisible border | `crops a bordered window to its visible frame instead of shifting it` — verified to fail against the pre-fix implementation and pass after. On a real 1004×672 window the stray left strip went from 8 black columns to 1, and the 7 px previously missing on the right are now included. **Passed locally.** |
+| A window image has no black 1px frame | Same bordered-window test — every edge line went from 241-322 pure-black pixels to 0 on a real bordered window, and a real 1004×672 window now captures as a clean 1002×671 image. **Passed locally.** |
 | PNG validation, naming, uniqueness, fallback and error mapping | 174 unit tests, all passing locally. |
 | macOS TypeScript orchestration | 26 unit tests with an injected runner, passing locally on Windows. |
 | **macOS real screen and window capture** | **Not verified on a macOS machine during development.** The suite is written and the helper is implemented, but no macOS hardware was available here. Verification depends on the `macos-real-capture` GitHub Actions job actually passing. Until that job has produced a green run, treat macOS support as **UNVERIFIED**. |

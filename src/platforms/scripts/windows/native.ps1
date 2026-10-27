@@ -28,6 +28,13 @@ public static class DshShotNative
         public int Bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -50,6 +57,12 @@ public static class DshShotNative
 
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
 
     [DllImport("user32.dll")]
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
@@ -437,4 +450,33 @@ function Exit-DshShotFailure {
         error  = [ordered]@{ code = $Code; message = $Message }
     })
     exit 1
+}
+
+function Get-DshShotClientRect {
+    <#
+      .SYNOPSIS
+        Client area of a window, in screen coordinates.
+      .DESCRIPTION
+        Used to measure the 1px frame that the desktop window manager composites
+        between the visible frame and the client area: it is the gap between this
+        rectangle and the visible frame on the left, right and bottom. The gap at
+        the top is the title bar, which the window paints itself.
+    #>
+    param([IntPtr]$Handle)
+
+    $rect = New-Object DshShotNative+RECT
+    if (-not [DshShotNative]::GetClientRect($Handle, [ref]$rect)) {
+        return $null
+    }
+    $origin = New-Object DshShotNative+POINT
+    if (-not [DshShotNative]::ClientToScreen($Handle, [ref]$origin)) {
+        return $null
+    }
+
+    return [pscustomobject][ordered]@{
+        x      = [int]$origin.X
+        y      = [int]$origin.Y
+        width  = [int]($rect.Right - $rect.Left)
+        height = [int]($rect.Bottom - $rect.Top)
+    }
 }

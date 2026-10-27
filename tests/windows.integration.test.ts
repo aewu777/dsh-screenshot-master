@@ -624,25 +624,33 @@ describe.skipIf(process.platform !== 'win32')('Windows capture fidelity', () => 
       expect(geometry.windowWidth).toBeGreaterThan(geometry.clientWidth)
       expect(window.bounds.width).toBeLessThan(geometry.windowWidth)
 
+      // The 1px frame the desktop window manager draws between the visible frame
+      // and the client area is excluded: PrintWindow paints it black.
+      const borderLeft = geometry.clientX - window.bounds.x
+      const borderRight =
+        window.bounds.x + window.bounds.width - (geometry.clientX + geometry.clientWidth)
+      const borderBottom =
+        window.bounds.y + window.bounds.height - (geometry.clientY + geometry.clientHeight)
+      expect(borderLeft).toBeGreaterThan(0)
+
       const result = await service.captureWindow({ windowId: window.id })
 
-      // The saved image is the visible frame, not the larger window rectangle.
-      expect(result.width).toBe(window.bounds.width)
-      expect(result.height).toBe(window.bounds.height)
-
       const captured = decodePng(await fs.readFile(result.path))
-      expect(captured.width).toBe(window.bounds.width)
-      expect(captured.height).toBe(window.bounds.height)
+
+      // Trimming both side borders leaves exactly the client width; the title bar
+      // stays because it is painted by the window itself.
+      expect(captured.width).toBe(geometry.clientWidth)
+      expect(captured.width).toBe(window.bounds.width - borderLeft - borderRight)
+      // The title bar stays: only the bottom border is removed vertically.
+      expect(captured.height).toBe(window.bounds.height - borderBottom)
+      expect(result.width).toBe(captured.width)
+      expect(result.height).toBe(captured.height)
 
       // The client area carries the known pattern; it must appear at exactly the
       // geometric position implied by the window and client rectangles.
-      const offsetX = geometry.clientX - window.bounds.x
-      const offsetY = geometry.clientY - window.bounds.y
-      expect(offsetX).toBeGreaterThan(0)
-
       const comparison = compareImages(captured, decodePng(await fs.readFile(borderedExpected)), {
-        x: offsetX,
-        y: offsetY,
+        x: 0,
+        y: geometry.clientY - window.bounds.y,
       })
 
       expect(comparison.samples).toEqual([])
