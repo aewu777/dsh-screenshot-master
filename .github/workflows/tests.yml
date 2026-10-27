@@ -1,0 +1,167 @@
+name: tests
+
+# Windows and macOS verification for dsh-screenshot-master.
+#
+# Three independent signals, deliberately kept apart:
+#   unit                 - deterministic logic tests, no screen involved
+#   windows-integration  - real captures on a GitHub-hosted Windows runner
+#   macos-real-capture   - real captures through ScreenCaptureKit on macOS
+#
+# The real-capture jobs never use `continue-on-error` and never skip their
+# assertions: a runner without a GUI session, a display, or Screen Recording
+# permission makes the job fail, which is the honest outcome. Read the
+# "Report capture environment" step to see why.
+
+on:
+  push:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+        node:
+          - '22'
+          - '24'
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check sources and tests
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        shell: bash
+        run: npm run test:unit 2>&1 | tee unit-tests.log
+
+      - name: Upload unit test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-${{ matrix.os }}-node${{ matrix.node }}
+          path: unit-tests.log
+          if-no-files-found: ignore
+
+  windows-integration:
+    name: windows integration (real capture)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Report capture environment
+        shell: bash
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          powershell -NoProfile -Command 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "display {0} primary={1} bounds={2}" -f $_.DeviceName, $_.Primary, $_.Bounds }'
+
+      - name: Windows integration tests (real screen and window capture)
+        shell: bash
+        run: npm run test:integration 2>&1 | tee windows-integration.log
+
+      - name: Upload integration test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-integration
+          path: windows-integration.log
+          if-no-files-found: ignore
+
+  macos-real-capture:
+    name: macOS real capture (ScreenCaptureKit)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      - name: Build the ScreenCaptureKit helper
+        run: npm run build:native:macos
+
+      - name: Build the plugin
+        run: npm run build
+
+      - name: Report capture environment
+        # Diagnostics only: this step is allowed to describe a broken environment.
+        # The test step below is not, and fails if capture cannot happen.
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -x
+          sw_vers
+          uname -m
+          file native/macos/build/dsh-screenshot-helper
+          echo "--- screen recording preflight ---"
+          ./native/macos/build/dsh-screenshot-helper permission || true
+          echo "--- shareable content ---"
+          ./native/macos/build/dsh-screenshot-helper list | head -c 4000 || true
+
+      - name: macOS real-capture integration tests (Test A: screen, Test B: window)
+        shell: bash
+        run: npm run test:integration 2>&1 | tee macos-integration.log
+
+      - name: Upload integration test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-real-capture
+          path: macos-integration.log
+          if-no-files-found: ignore
