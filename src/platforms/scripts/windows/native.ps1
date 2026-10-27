@@ -339,35 +339,46 @@ function Get-DshShotWindows {
 function Save-DshShotBitmap {
     <#
       .SYNOPSIS
-        Flatten a bitmap onto white and write it as a 24-bit PNG.
+        Write a captured bitmap to PNG as opaque 24-bit RGB.
       .DESCRIPTION
-        `PrintWindow` can leave alpha at zero for composited windows. Writing the
-        PNG directly from a 32-bit bitmap would then store a fully transparent
-        image that decodes as "blank" even though the pixels were captured.
-        Compositing over white keeps the visible result and makes blank frames
-        unambiguous.
+        The conversion copies pixels and ignores the source alpha channel.
+
+        Every GDI capture API used here (CopyFromScreen, PrintWindow, BitBlt)
+        leaves the alpha byte of a 32bpp destination undefined: a freshly created
+        Format32bppArgb bitmap starts at ARGB(0,0,0,0), GDI writes only the colour
+        bytes, and any region that was never painted keeps alpha 0 with black RGB.
+        Blending such a pixel over a background therefore invents colour that was
+        never rendered - a dark pixel with alpha 0 turns into pure white. That is
+        a capture artifact, not image content.
+
+        `Bitmap.Clone` performs a format conversion only; it does not composite,
+        so the colour values that GDI actually produced are preserved and the
+        meaningless alpha byte is dropped.
     #>
     param(
         [System.Drawing.Bitmap]$Bitmap,
         [string]$Path
     )
 
-    $flat = New-Object System.Drawing.Bitmap($Bitmap.Width, $Bitmap.Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-    $graphics = [System.Drawing.Graphics]::FromImage($flat)
-    try {
-        $graphics.Clear([System.Drawing.Color]::White)
-        $graphics.DrawImage($Bitmap, 0, 0, $Bitmap.Width, $Bitmap.Height)
-    } finally {
-        $graphics.Dispose()
+    $width = $Bitmap.Width
+    $height = $Bitmap.Height
+    $targetFormat = [System.Drawing.Imaging.PixelFormat]::Format24bppRgb
+
+    if ($Bitmap.PixelFormat -eq $targetFormat) {
+        $owned = $false
+        $output = $Bitmap
+    } else {
+        $rect = New-Object System.Drawing.Rectangle(0, 0, $width, $height)
+        $output = $Bitmap.Clone($rect, $targetFormat)
+        $owned = $true
     }
 
-    $width = $flat.Width
-    $height = $flat.Height
     try {
-        $flat.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $output.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     } finally {
-        $flat.Dispose()
+        if ($owned) { $output.Dispose() }
     }
+
     return [pscustomobject][ordered]@{ width = $width; height = $height }
 }
 

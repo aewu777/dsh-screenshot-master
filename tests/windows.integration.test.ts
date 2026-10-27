@@ -11,14 +11,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ScreenshotService } from '../src/capture.js'
 import { resolveConfig } from '../src/config.js'
 import { ScreenshotError } from '../src/errors.js'
-import { analyzeImage, colorShare, decodePng } from '../src/png.js'
+import { analyzeImage, colorShare, decodePng, pixelAt, type DecodedPng } from '../src/png.js'
 import { createFileSystemOps } from '../src/storage.js'
 import { createWindowsBackend } from '../src/platforms/windows.js'
 import type { WindowSummary } from '../src/capture.js'
@@ -323,5 +323,252 @@ describe.skipIf(process.platform !== 'win32')('Windows real capture', () => {
     const entries = await fs.readdir(temp.path)
     expect(entries.length).toBeGreaterThan(0)
     expect(entries.every((entry) => entry.endsWith('.png'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Capture fidelity: deterministic pixel patterns
+//
+// These tests exist because a capture pipeline can "succeed" while changing
+// pixels: channel swaps, stride errors, resampling, or alpha compositing all
+// produce a valid PNG that is subtly wrong. The pattern fixture has a known
+// value for every pixel, so any deviation is measurable.
+// ---------------------------------------------------------------------------
+
+const CONVERSION_FIXTURE = fileURLToPath(new URL('./fixtures/conversion-check.ps1', import.meta.url))
+const PATTERN_FIXTURE = fileURLToPath(new URL('./fixtures/pattern-window.ps1', import.meta.url))
+
+const PATTERN_WIDTH = 320
+const PATTERN_HEIGHT = 240
+
+function runFixtureScript(script: string, args: string[]): string {
+  return execFileSync(
+    POWERSHELL,
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args],
+    { encoding: 'utf8' },
+  )
+}
+
+/** Compare two images, optionally shifting the actual image by an origin. */
+function compareImages(
+  actual: DecodedPng,
+  expected: DecodedPng,
+  origin = { x: 0, y: 0 },
+): { differing: number; maxDelta: number; samples: string[] } {
+  let differing = 0
+  let maxDelta = 0
+  const samples: string[] = []
+  for (let y = 0; y < expected.height; y += 1) {
+    for (let x = 0; x < expected.width; x += 1) {
+      const ax = x + origin.x
+      const ay = y + origin.y
+      if (ax < 0 || ay < 0 || ax >= actual.width || ay >= actual.height) {
+        differing += 1
+        if (samples.length < 10) samples.push(`(${x},${y}) outside the actual image`)
+        continue
+      }
+      const got = pixelAt(actual, ax, ay)
+      const want = pixelAt(expected, x, y)
+      const delta = Math.max(
+        Math.abs(got.r - want.r),
+        Math.abs(got.g - want.g),
+        Math.abs(got.b - want.b),
+      )
+      if (delta === 0) continue
+      differing += 1
+      maxDelta = Math.max(maxDelta, delta)
+      if (samples.length < 10) {
+        samples.push(
+          `(${x},${y}) actual=${got.r},${got.g},${got.b} expected=${want.r},${want.g},${want.b}`,
+        )
+      }
+    }
+  }
+  return { differing, maxDelta, samples }
+}
+
+/** Bright pixels whose eight neighbours are all dark: the reported artifact shape. */
+function countIsolatedBrightPixels(image: DecodedPng): number {
+  const luma = (c: { r: number; g: number; b: number }): number =>
+    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+  let count = 0
+  for (let y = 1; y < image.height - 1; y += 1) {
+    for (let x = 1; x < image.width - 1; x += 1) {
+      if (luma(pixelAt(image, x, y)) < 200) continue
+      let dark = 0
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue
+          if (luma(pixelAt(image, x + dx, y + dy)) <= 80) dark += 1
+        }
+      }
+      if (dark === 8) count += 1
+    }
+  }
+  return count
+}
+
+describe.skipIf(process.platform !== 'win32')('Windows capture fidelity', () => {
+  let temp: TempDirectory
+  let service: ScreenshotService
+  let expectedPath: string
+  let patternWindow: WindowSummary
+  let patternTitle: string
+  const children = new Set<ChildProcess>()
+
+  async function stop(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    child.kill()
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
+    children.delete(child)
+  }
+
+  beforeAll(async () => {
+    temp = await makeTempDirectory('dsh-shot-fidelity-')
+    const config = resolveConfig({ outputDir: temp.path, timeoutMs: 60_000 }, {})
+    service = new ScreenshotService({
+      backend: createWindowsBackend({ timeoutMs: config.timeoutMs }),
+      config,
+      ops: createFileSystemOps(),
+    })
+
+    patternTitle = `DSH Pattern ${process.pid}-${Date.now().toString(36)}`
+    expectedPath = path.join(temp.path, 'expected-pattern.png')
+    const child = spawn(
+      POWERSHELL,
+      [
+        '-NoProfile',
+        '-STA',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        PATTERN_FIXTURE,
+        '-Title',
+        patternTitle,
+        '-ExpectedPath',
+        expectedPath,
+        '-Width',
+        String(PATTERN_WIDTH),
+        '-Height',
+        String(PATTERN_HEIGHT),
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false },
+    )
+    child.stdout?.on('data', () => {})
+    child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[pattern] ${chunk.toString()}`))
+    children.add(child)
+
+    const deadline = Date.now() + 40_000
+    while (Date.now() < deadline) {
+      const targets = await service.listWindows({ filter: patternTitle }).catch(() => undefined)
+      const match = targets?.windows.find((window) => window.title === patternTitle)
+      if (match) {
+        patternWindow = match
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    if (!patternWindow) throw new Error(`pattern fixture window ${patternTitle} never appeared`)
+  })
+
+  afterAll(async () => {
+    for (const child of [...children]) await stop(child)
+    await temp?.cleanup()
+  })
+
+  it('converts a capture buffer without compositing it over a background', async () => {
+    // GDI capture buffers carry an undefined alpha byte: 0 wherever nothing was
+    // painted. Compositing those pixels over white fabricated pure-white dots.
+    const output = path.join(temp.path, 'conversion.png')
+    const payload = JSON.parse(runFixtureScript(CONVERSION_FIXTURE, ['-Out', output])) as {
+      ok: boolean
+      width: number
+      height: number
+      expected: Array<[number, number, number]>
+    }
+    expect(payload.ok).toBe(true)
+
+    const image = decodePng(await fs.readFile(output))
+    expect(image.width).toBe(4)
+    expect(image.height).toBe(3)
+
+    payload.expected.forEach((want, index) => {
+      const got = pixelAt(image, index % 4, Math.floor(index / 4))
+      expect([got.r, got.g, got.b]).toEqual(want)
+    })
+
+    // The specific pixel that the old conversion turned into pure white.
+    expect(pixelAt(image, 0, 1)).toEqual({ r: 16, g: 16, b: 16 })
+    // A sub-threshold alpha must not lighten the colour either (sample 10).
+    expect(pixelAt(image, 2, 2)).toEqual({ r: 32, g: 64, b: 128 })
+  })
+
+  it('reproduces a deterministic window pixel for pixel', async () => {
+    expect(patternWindow.bounds.width).toBe(PATTERN_WIDTH)
+    expect(patternWindow.bounds.height).toBe(PATTERN_HEIGHT)
+
+    const result = await service.captureWindow({ windowId: patternWindow.id })
+    expect(result.method).toBe('printwindow')
+    expect(result.fallback).toBe(false)
+    expect(result.width).toBe(PATTERN_WIDTH)
+    expect(result.height).toBe(PATTERN_HEIGHT)
+
+    const captured = decodePng(await fs.readFile(result.path))
+    const expected = decodePng(await fs.readFile(expectedPath))
+    const comparison = compareImages(captured, expected)
+
+    expect(comparison.samples).toEqual([])
+    expect(comparison.differing).toBe(0)
+  })
+
+  it('keeps single-pixel detail and exact colours', async () => {
+    const result = await service.captureWindow({ windowId: patternWindow.id })
+    const image = decodePng(await fs.readFile(result.path))
+
+    // 1px checkerboard: alternating pure white and pure black must survive.
+    expect(pixelAt(image, 120, 120)).toEqual({ r: 255, g: 255, b: 255 })
+    expect(pixelAt(image, 121, 120)).toEqual({ r: 0, g: 0, b: 0 })
+    // 1px vertical lines every 4px.
+    expect(pixelAt(image, 160, 160)).toEqual({ r: 255, g: 255, b: 255 })
+    expect(pixelAt(image, 161, 160)).toEqual({ r: 16, g: 16, b: 16 })
+    // Flat colour bands and the eight pure swatches. (316,36) is outside the
+    // 1px outline and the antialiased text, so it must be the flat dark colour.
+    expect(pixelAt(image, 100, 60)).toEqual({ r: 240, g: 240, b: 240 })
+    expect(pixelAt(image, 316, 36)).toEqual({ r: 16, g: 16, b: 16 })
+    expect(pixelAt(image, 20, 220)).toEqual({ r: 255, g: 0, b: 0 })
+    expect(pixelAt(image, 60, 220)).toEqual({ r: 0, g: 255, b: 0 })
+    expect(pixelAt(image, 100, 220)).toEqual({ r: 0, g: 0, b: 255 })
+    expect(pixelAt(image, 140, 220)).toEqual({ r: 255, g: 255, b: 255 })
+    expect(pixelAt(image, 180, 220)).toEqual({ r: 0, g: 0, b: 0 })
+    expect(pixelAt(image, 220, 220)).toEqual({ r: 255, g: 0, b: 255 })
+    expect(pixelAt(image, 260, 220)).toEqual({ r: 0, g: 255, b: 255 })
+    expect(pixelAt(image, 300, 220)).toEqual({ r: 255, g: 255, b: 0 })
+    // A gradient row must stay a gradient, not a channel-swapped one.
+    expect(pixelAt(image, 0, 100)).toEqual({ r: 0, g: 0, b: 255 })
+    expect(pixelAt(image, PATTERN_WIDTH - 1, 100)).toEqual({ r: 255, g: 0, b: 0 })
+  })
+
+  it('does not introduce isolated bright pixels into a window capture', async () => {
+    const result = await service.captureWindow({ windowId: patternWindow.id })
+    const captured = decodePng(await fs.readFile(result.path))
+    const expected = decodePng(await fs.readFile(expectedPath))
+
+    expect(countIsolatedBrightPixels(captured)).toBe(countIsolatedBrightPixels(expected))
+    expect(countIsolatedBrightPixels(captured)).toBe(0)
+  })
+
+  it('matches the fixture region of a full-screen capture', async () => {
+    const screen = await service.captureScreen()
+    expect(screen.method).toBe('copyfromscreen')
+    const full = decodePng(await fs.readFile(screen.path))
+
+    const comparison = compareImages(full, decodePng(await fs.readFile(expectedPath)), {
+      x: patternWindow.bounds.x,
+      y: patternWindow.bounds.y,
+    })
+
+    expect(comparison.samples).toEqual([])
+    expect(comparison.differing).toBe(0)
   })
 })
