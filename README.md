@@ -508,8 +508,8 @@ Do not infer macOS support from TypeScript compilation, from unit tests, or from
 
 ## The DSH API this plugin relies on
 
-Verified against the installed DeepSeek Harness (`@deepseek-ai/dsh-tools` 0.2.1-rc.2) and the shipped
-`dsh-ue4ss` bundle, rather than assumed:
+Verified against the installed DeepSeek Harness tool registry (`@deepseek-ai/dsh-tools` 0.2.1-rc.2) rather than
+assumed:
 
 - **Entry point**: a package whose module exports `name`, `inject = ['tools']` and `apply(ctx, config)`.
 - **Tool registration**: `ctx.tools.register(definition)` returns a disposer. A definition is
