@@ -1,0 +1,10 @@
+# dsh-screenshot-master bundle layer.
+#
+# This file is applied automatically when the package is installed as a profile
+# bundle (package.json declares `dsh.bundle.patch`). Override any field from the
+# profile's own cordis.patch.yml.
+#
+# All configuration keys are optional; the defaults are described in README.md.
+- insert:
+    - id: dsh-screenshot-master
+      name: dsh-screenshot-master
