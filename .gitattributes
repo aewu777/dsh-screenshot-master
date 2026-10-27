@@ -1,0 +1,17 @@
+# Normalize text to LF in the repository so that the shell scripts and the
+# PowerShell scripts behave the same on Windows and macOS checkouts.
+* text=auto
+
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.swift text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+
+# Compiled helper binaries and any captured images are never text.
+*.png binary
+*.partial binary
+*.exe binary
