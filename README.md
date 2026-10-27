@@ -297,6 +297,22 @@ Window capture walks a documented chain and reports which step produced the imag
    rectangle is copied off the desktop. Reported with `fallback: true` and a note that overlapping windows are
    included.
 
+### Why the PNG conversion never composites
+
+Every capture buffer is written to PNG as opaque 24-bit RGB by **copying pixels, never by compositing them over a
+background**.
+
+GDI leaves the alpha byte of a capture buffer undefined. A fresh `Format32bppArgb` bitmap starts at
+`ARGB(0,0,0,0)`, `CopyFromScreen`/`PrintWindow`/`BitBlt` write only the colour bytes, and any region that was never
+painted keeps `alpha = 0` with black RGB. Blending such a pixel over white turns an unpainted dark pixel into a
+pure-white one, so the plugin would emit white dots that were never rendered. The conversion therefore drops the
+alpha channel (`Bitmap.Clone` to `Format24bppRgb`, which converts without compositing) and keeps exactly the bytes
+GDI produced. `tests/windows.integration.test.ts` pins this down with a fixture whose alpha values are deliberately
+wrong.
+
+Screen captures are unaffected in practice because `CopyFromScreen` writes `alpha = 255` for every pixel; the
+window paths are the ones where undefined alpha can appear.
+
 Limitations, all reported rather than hidden:
 
 - Hardware-accelerated applications (browsers, Electron/Chromium apps, games) commonly refuse all three
@@ -399,6 +415,23 @@ is not evidence that macOS capture works, and it is never described as such.
 The Windows real-capture suite deliberately includes a window-overlap test: fixture B is top-most and covers part
 of fixture A, so a desktop crop of A's rectangle would contain B's magenta body. A real window capture cannot.
 
+### Pixel-fidelity tests
+
+`tests/fixtures/pattern-window.ps1` renders a borderless window whose every pixel has a known value: flat dark and
+flat light bands, a horizontal gradient, a 1px checkerboard, 1px vertical lines, eight pure colour swatches, a 1px
+outline and antialiased text. The fixture also writes the exact bitmap it displays, and the tests compare the
+capture against both that bitmap and an independently computed prediction of the pattern. The suite asserts:
+
+- a window capture reproduces the pattern with **zero** differing pixels,
+- single-pixel detail survives (alternating white/black checkerboard, 1px lines),
+- colours are exact and not channel-swapped (pure red/green/blue/magenta/cyan/yellow swatches, gradient endpoints),
+- a full-screen capture matches the same window region pixel for pixel,
+- no isolated bright pixels are introduced anywhere,
+- the PNG conversion ignores the capture buffer's undefined alpha channel.
+
+`tests/fixtures/conversion-check.ps1` feeds the production conversion a bitmap whose alpha bytes are 0, 128 and
+nonsense, and asserts the colours survive untouched.
+
 ## Continuous integration
 
 [`.github/workflows/tests.yml`](./.github/workflows/tests.yml) runs on:
@@ -429,13 +462,15 @@ Notes:
 
 ## Verification status
 
-Last updated when this repository was initialised (2026-10-27, Windows 11 development machine).
+Last updated after the capture-fidelity investigation (2026-10-27, Windows 11 development machine).
 
 | Claim | Evidence |
 | --- | --- |
 | Windows full-screen capture works | `tests/windows.integration.test.ts` — real 1920×1080 capture, decoded and measured. **Passed locally.** |
 | Windows window capture works | Same suite — real WinForms windows captured by handle; the overlap test proves the window's own content is captured. **Passed locally.** |
 | Windows window enumeration works | Same suite — real windows and displays enumerated with unique identifiers. **Passed locally.** |
+| Capture pipeline is pixel-exact | `Windows capture fidelity` tests — 0 of 76 800 pixels differ from the fixture's own rendering, and 0 differ for the same window region inside a full-screen capture. **Passed locally.** |
+| The PNG conversion does not fabricate white pixels | `converts a capture buffer without compositing it over a background` — verified to fail against the pre-fix implementation and pass after the fix. **Passed locally.** |
 | PNG validation, naming, uniqueness, fallback and error mapping | 174 unit tests, all passing locally. |
 | macOS TypeScript orchestration | 26 unit tests with an injected runner, passing locally on Windows. |
 | **macOS real screen and window capture** | **Not verified on a macOS machine during development.** The suite is written and the helper is implemented, but no macOS hardware was available here. Verification depends on the `macos-real-capture` GitHub Actions job actually passing. Until that job has produced a green run, treat macOS support as **UNVERIFIED**. |
