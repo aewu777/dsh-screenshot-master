@@ -295,6 +295,26 @@ describe('failure mapping', () => {
     expect(error.message).toContain('dyld: Symbol not found')
   })
 
+  it('reports a helper killed by a signal as a crash and keeps the diagnostics', async () => {
+    // A CoreGraphics assertion aborts the process, so there is no exit code and
+    // stderr is the only clue about which stage failed.
+    const diagnostics =
+      '[stage] start capture-window\n[stage] window: content filter created\n' +
+      'Assertion failed: (did_initialize), function CGS_REQUIRE_INIT, file CGInitialization.c, line 44.'
+    const recorder = makeRunner(() => ({ stdout: '', stderr: diagnostics, code: null }))
+    const backend = createMacosBackend({ runner: recorder.runner, helperPath: FAKE_HELPER, exists: () => true })
+
+    const error = (await backend
+      .captureWindow({ windowId: 'mac:1', outPath: '/tmp/x', strategy: 'native' })
+      .catch((caught: unknown) => caught)) as ScreenshotError
+
+    expect(error.code).toBe('CAPTURE_FAILED')
+    expect(error.message).toContain('crashed')
+    expect(error.message).toContain('CGS_REQUIRE_INIT')
+    expect(error.message).toContain('window: content filter created')
+    expect(error.hint).toMatch(/WindowServer/)
+  })
+
   it('reports a timeout as TIMEOUT and mentions the permission prompt', async () => {
     const recorder = makeRunner(() => ({ timedOut: true, code: null }))
     const backend = createMacosBackend({ runner: recorder.runner, helperPath: FAKE_HELPER, exists: () => true })

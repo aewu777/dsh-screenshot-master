@@ -506,11 +506,13 @@ Last updated after the window-frame alignment fix (2026-10-27, Windows 11 develo
 | A window image is aligned to the visible frame, not shifted by the invisible border | `crops a bordered window to its visible frame instead of shifting it` — verified to fail against the pre-fix implementation and pass after. On a real 1004×672 window the stray left strip went from 8 black columns to 1, and the 7 px previously missing on the right are now included. **Passed locally.** |
 | A window image has no black 1px frame | Same bordered-window test — every edge line went from 241-322 pure-black pixels to 0 on a real bordered window, and a real 1004×672 window now captures as a clean 1002×671 image. **Passed locally.** |
 | PNG validation, naming, uniqueness, fallback and error mapping | 174 unit tests, all passing locally. |
-| macOS TypeScript orchestration | 26 unit tests with an injected runner, passing locally on Windows. |
-| **macOS real screen and window capture** | **Not verified on a macOS machine during development.** The suite is written and the helper is implemented, but no macOS hardware was available here. Verification depends on the `macos-real-capture` GitHub Actions job actually passing. Until that job has produced a green run, treat macOS support as **UNVERIFIED**. |
-| GitHub Actions workflow | Written but **not yet executed** — this repository has no remote and nothing has been pushed. No workflow run is claimed. |
+| macOS TypeScript orchestration | 27 unit tests with an injected runner, passing locally on Windows. |
+| **macOS real full-screen capture (Test A)** | **Passed in CI** on a GitHub-hosted `macos-latest` runner: the production backend enumerated displays and captured the real screen through the ScreenCaptureKit helper (`method: screencapturekit`, decoded and measured). |
+| **macOS real window capture (Test B)** | **FAILED in CI.** The helper was killed by a CoreGraphics assertion — `Assertion failed: (did_initialize), function CGS_REQUIRE_INIT, file CGInitialization.c, line 44` — during window capture, while display capture in the same environment worked. The window path has since been changed to initialise AppKit first and to derive its capture size from `SCWindow.frame` and the display pixel density instead of the `SCContentFilter` properties that query CoreGraphics. **Not verified; a green Test B run is still required.** |
+| GitHub Actions workflow | Ran twice. The first run failed before starting any job (invalid YAML, since fixed and now checked by `npm run check:workflow`); the second run reached the jobs, and its macOS results are the two rows above. |
 
-Do not infer macOS support from TypeScript compilation, from unit tests, or from the existence of a workflow file.
+Do not infer macOS support from TypeScript compilation, from unit tests, or from the existence of a workflow file. As of
+the last run, macOS *display* capture is verified in CI and macOS *window* capture is not.
 
 ## The DSH API this plugin relies on
 

@@ -125,6 +125,53 @@ func scaleFactor(forDisplayID displayID: CGDirectDisplayID) -> Double {
     return 1.0
 }
 
+/// Active displays, in the CoreGraphics coordinate space.
+func activeDisplayIDs() -> [CGDirectDisplayID] {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+        return []
+    }
+    var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &displays, &count) == .success else {
+        return []
+    }
+    return Array(displays.prefix(Int(count)))
+}
+
+/// Pixel density of the display that contains a point in CoreGraphics coordinates.
+///
+/// Used instead of `SCContentFilter.pointPixelScale`: that property asks
+/// CoreGraphics about the window's display and abort the process with
+/// `CGS_REQUIRE_INIT` when the process has no WindowServer connection, which is
+/// exactly what happened on a CI runner. Deriving the scale from the display
+/// list uses the same APIs as display capture, which works there.
+func backingScale(forCGPoint point: CGPoint) -> CGFloat {
+    for displayID in activeDisplayIDs() {
+        let bounds = CGDisplayBounds(displayID)
+        if bounds.contains(point), bounds.width > 0 {
+            return CGFloat(CGDisplayPixelsWide(displayID)) / bounds.width
+        }
+    }
+    return 1
+}
+
+/// Establish the AppKit/WindowServer connection before window capture.
+///
+/// A window content filter needs that connection. Without it CoreGraphics does
+/// not return an error, it aborts the process, so the helper has to do this
+/// before it touches ScreenCaptureKit's window APIs. AppKit must be touched on
+/// the main thread, which is why this runs at start-up rather than inside the
+/// capture task.
+func initialiseApplicationSupport() {
+    _ = NSApplication.shared
+    _ = NSApplication.shared.setActivationPolicy(.accessory)
+}
+
+/// Diagnostics on stderr, so a crashed helper still says where it got to.
+func stage(_ message: String) {
+    FileHandle.standardError.write(("[stage] " + message + "\n").data(using: .utf8)!)
+}
+
 func writePng(_ image: CGImage, to path: String) throws {
     let url = URL(fileURLWithPath: path) as CFURL
     guard let destination = CGImageDestinationCreateWithURL(
@@ -315,9 +362,18 @@ func commandCaptureWindow(_ arguments: [String]) async throws -> Never {
             message: "--id must be a numeric CGWindowID as returned by list."
         )
     }
+    // A window content filter needs a WindowServer connection; without one
+    // CoreGraphics aborts the process instead of returning an error. It is
+    // established on the main thread before the work starts (see the entry
+    // point at the bottom of this file).
+    stage("window: arguments parsed")
+
     try requireScreenRecordingPermission()
+    stage("window: screen recording permission ok")
 
     let content = try await shareableContent()
+    stage("window: shareable content enumerated")
+
     guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
         throw HelperFailure(
             code: "WINDOW_NOT_FOUND",
@@ -334,11 +390,18 @@ func commandCaptureWindow(_ arguments: [String]) async throws -> Never {
     }
 
     let filter = SCContentFilter(desktopIndependentWindow: window)
+    stage("window: content filter created")
+
     let configuration = SCStreamConfiguration()
-    let contentRect = filter.contentRect
-    let scale = CGFloat(filter.pointPixelScale)
-    configuration.width = max(1, Int((contentRect.width * scale).rounded()))
-    configuration.height = max(1, Int((contentRect.height * scale).rounded()))
+    // Size the capture from the window's frame and the display's pixel density.
+    // `SCContentFilter.contentRect`/`pointPixelScale` would be the direct route,
+    // but they query CoreGraphics about the window and abort the process with
+    // CGS_REQUIRE_INIT when there is no WindowServer connection.
+    let frame = window.frame
+    let scale = backingScale(forCGPoint: CGPoint(x: frame.midX, y: frame.midY))
+    configuration.width = max(1, Int((frame.width * scale).rounded()))
+    configuration.height = max(1, Int((frame.height * scale).rounded()))
+    stage("window: configuration \(configuration.width)x\(configuration.height) at scale \(scale)")
     configuration.showsCursor = false
     configuration.capturesAudio = false
     configuration.captureResolution = .best
@@ -353,10 +416,11 @@ func commandCaptureWindow(_ arguments: [String]) async throws -> Never {
             message: "ScreenCaptureKit returned no image for window \(windowID): \(error.localizedDescription)"
         )
     }
+    stage("window: captured \(image.width)x\(image.height)")
 
     try writePng(image, to: out)
+    stage("window: written")
 
-    let frame = window.frame
     emitSuccess([
         "mode": "window",
         "method": "screencapturekit",
@@ -391,6 +455,8 @@ func runHelper(arguments: [String]) async {
         )
     }
 
+    stage("start \(command)")
+
     do {
         switch command {
         case "list":
@@ -413,6 +479,16 @@ func runHelper(arguments: [String]) async {
 }
 
 let helperArguments = Array(CommandLine.arguments.dropFirst())
+
+// Window capture is the only command that needs an AppKit/WindowServer
+// connection, and AppKit has to be initialised on the main thread, which this
+// top-level code runs on. Without it CoreGraphics aborts the process with
+// CGS_REQUIRE_INIT when the window content filter is created.
+if helperArguments.first == "capture-window" {
+    initialiseApplicationSupport()
+    stage("window: application support initialised")
+}
+
 Task.detached(priority: .userInitiated) {
     await runHelper(arguments: helperArguments)
 }

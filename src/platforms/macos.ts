@@ -222,9 +222,25 @@ function helperRunFailure(result: RunResult, helperPath: string): ScreenshotErro
     )
   }
   const stderr = result.stderr.trim()
+  const detail = stderr ? ` Output: ${stderr}` : ' It produced no diagnostic output.'
+
+  // A null exit code means the process was killed by a signal, i.e. it crashed.
+  // macOS reports some CoreGraphics failures as a hard abort rather than an
+  // error, so the diagnostic output is the only way to locate the stage.
+  if (result.code === null) {
+    return new ScreenshotError(
+      'CAPTURE_FAILED',
+      `The macOS capture helper crashed before writing a result (terminated by a signal).${detail}`,
+      {
+        hint: 'A CoreGraphics assertion such as CGS_REQUIRE_INIT means the helper has no WindowServer connection, which a headless or non-GUI session cannot provide. Run the capture in a logged-in desktop session.',
+        details: { helperPath },
+      },
+    )
+  }
+
   return new ScreenshotError(
     'CAPTURE_FAILED',
-    `The macOS capture helper exited with code ${String(result.code)}${stderr ? `: ${stderr}` : '.'}`,
+    `The macOS capture helper exited with code ${String(result.code)}.${detail}`,
   )
 }
 
