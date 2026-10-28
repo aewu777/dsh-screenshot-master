@@ -56,8 +56,8 @@ calls) and by a test that scans the sources for those capabilities.
 
 | Platform | Status | Native mechanism |
 | --- | --- | --- |
-| Windows 10 / 11 (x64, arm64) | Implemented and verified by real-capture tests on Windows 11 | Win32 `PrintWindow` / `BitBlt` / `Graphics.CopyFromScreen` through Windows PowerShell 5.1 |
-| macOS 14 (Sonoma) and newer | Implemented; **verified only by CI, see [Verification status](#verification-status)** | ScreenCaptureKit (`SCShareableContent`, `SCContentFilter`, `SCScreenshotManager`) through a bundled Swift helper |
+| Windows 10 / 11 (x64, arm64) | Implemented and verified by real-capture tests locally and in CI on `windows-latest` | Win32 `PrintWindow` / `BitBlt` / `Graphics.CopyFromScreen` through Windows PowerShell 5.1 |
+| macOS 14 (Sonoma) and newer | Implemented and verified by real-capture tests in CI on `macos-latest` (screen and window capture), see [Verification status](#verification-status) | ScreenCaptureKit (`SCShareableContent`, `SCContentFilter`, `SCScreenshotManager`) through a bundled Swift helper |
 | Linux, anything else | Not supported | The tools register but every call fails with `UNSUPPORTED_PLATFORM` |
 
 macOS 13 is **not** supported: `SCScreenshotManager.captureImage(contentFilter:configuration:)`, the API this
@@ -494,7 +494,7 @@ Notes:
 
 ## Verification status
 
-Last updated after the window-frame alignment fix (2026-10-27, Windows 11 development machine).
+Last updated after the first fully green cross-platform CI run (2026-10-29).
 
 | Claim | Evidence |
 | --- | --- |
@@ -505,14 +505,15 @@ Last updated after the window-frame alignment fix (2026-10-27, Windows 11 develo
 | The PNG conversion does not fabricate white pixels | `converts a capture buffer without compositing it over a background` — verified to fail against the pre-fix implementation and pass after the fix. **Passed locally.** |
 | A window image is aligned to the visible frame, not shifted by the invisible border | `crops a bordered window to its visible frame instead of shifting it` — verified to fail against the pre-fix implementation and pass after. On a real 1004×672 window the stray left strip went from 8 black columns to 1, and the 7 px previously missing on the right are now included. **Passed locally.** |
 | A window image has no black 1px frame | Same bordered-window test — every edge line went from 241-322 pure-black pixels to 0 on a real bordered window, and a real 1004×672 window now captures as a clean 1002×671 image. **Passed locally.** |
-| PNG validation, naming, uniqueness, fallback and error mapping | 174 unit tests, all passing locally. |
+| PNG validation, naming, uniqueness, fallback and error mapping | 175 unit tests, all passing locally and in CI. |
 | macOS TypeScript orchestration | 27 unit tests with an injected runner, passing locally on Windows. |
 | **macOS real full-screen capture (Test A)** | **Passed in CI** on a GitHub-hosted `macos-latest` runner: the production backend enumerated displays and captured the real screen through the ScreenCaptureKit helper (`method: screencapturekit`, decoded and measured). |
-| **macOS real window capture (Test B)** | **FAILED in CI.** The helper was killed by a CoreGraphics assertion — `Assertion failed: (did_initialize), function CGS_REQUIRE_INIT, file CGInitialization.c, line 44` — during window capture, while display capture in the same environment worked. The window path has since been changed to initialise AppKit first and to derive its capture size from `SCWindow.frame` and the display pixel density instead of the `SCContentFilter` properties that query CoreGraphics. **Not verified; a green Test B run is still required.** |
-| GitHub Actions workflow | Ran twice. The first run failed before starting any job (invalid YAML, since fixed and now checked by `npm run check:workflow`); the second run reached the jobs, and its macOS results are the two rows above. |
+| **macOS real window capture (Test B)** | **Passed in CI.** The first run failed with a CoreGraphics abort (`CGS_REQUIRE_INIT`) while creating the window content filter, although display capture worked in the same session. After the helper was changed to initialise AppKit on the main thread and to size the capture from `SCWindow.frame` and the display pixel density, Test B passed on the same kind of runner. |
+| GitHub Actions workflow | Green across all six jobs: `unit` on `windows-latest` and `macos-latest` for Node 22 and 24, `windows integration (real capture)`, and `macOS real capture (ScreenCaptureKit)`. The first attempt failed before starting any job (invalid YAML, since fixed and guarded by `npm run check:workflow`). |
 
-Do not infer macOS support from TypeScript compilation, from unit tests, or from the existence of a workflow file. As of
-the last run, macOS *display* capture is verified in CI and macOS *window* capture is not.
+Do not infer macOS support from TypeScript compilation, from unit tests, or from the existence of a workflow file. It is
+verified because the real-capture job captured a real screen and a real window through ScreenCaptureKit on a
+GitHub-hosted macOS runner.
 
 ## The DSH API this plugin relies on
 
@@ -534,7 +535,10 @@ packages. `tests/tools.test.ts` asserts that every registered definition matches
 
 ## Known limitations
 
-- macOS support is implemented but unverified in this environment (see above).
+- macOS support is verified on GitHub-hosted `macos-latest` runners only, not on every macOS configuration. Mixed-DPI
+  multi-display setups and unusual window managers are untested.
+- On macOS, window capture requires a WindowServer connection and Screen Recording permission; a headless or non-GUI
+  session cannot provide the former and the helper will report it rather than pretend to capture.
 - Window capture cannot beat platform protection: DRM/protected windows, hardware-accelerated surfaces that
   refuse `PrintWindow`, and windows hidden by their own application are out of reach. Failures are explicit.
 - A genuinely uniform image (for example a maximised all-white slide) is rejected as `BLANK_CAPTURE` unless
